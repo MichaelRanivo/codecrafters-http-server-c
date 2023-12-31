@@ -9,6 +9,28 @@
 
 #define BUFFER_SIZE	1024
 
+char *request_path(char *buffer){
+	// take the first line of the HTTP request
+	char *first_line = strndup(buffer, strstr(buffer, "\r\n") - buffer);
+
+	// remove the GET or the POST to the First line
+	char *del_get = strstr(first_line, " ");
+
+	// return the path on the first line of the HTTP request
+	return strtok(del_get, " ");
+}
+
+char *extract_string(char *buffer){
+	// move forward to remove the first "/"
+	const char *substring = buffer+1;
+
+	// find the first position of the second "/"
+	char *slash_position = strchr(substring, '/');
+
+	// return the string on the path
+	return slash_position+1;
+}
+
 int path_valid(char *buffer, ssize_t bytes_read){
 
 	char *get = "GET / HTTP/1.1\r\n";
@@ -16,10 +38,11 @@ int path_valid(char *buffer, ssize_t bytes_read){
 		return 0;
 	}
 
-	for(size_t i=0; i<strlen(get); i++){
-		if(buffer[i] != get[i]){
-			return 0;
-		}
+	char *path = request_path(buffer);
+
+	//test if the path is the root path 
+	if(strcmp(path, "/") != 0 ){
+		return 0;
 	}
 
 	return 1;
@@ -87,17 +110,37 @@ int main() {
 	}
 	printf("Received: %zd\nbytes: \n%s\n", message_recvd, client_response);
 
-	char *server_respond = "HTTP/1.1 200 ok\r\n\r\n";
-	char *server_fail_respond = "HTTP/1.1 404 Not Found\r\n\r\n";
 
-	if(path_valid(client_response, message_recvd)){
+	char *path = request_path(client_response);
+
+	if(strcmp(path, "/") == 0 ){
+		char *server_respond = "HTTP/1.1 200 ok\r\n\r\n";	
 		ssize_t server_send_respond = send( client_accepted, server_respond, strlen(server_respond), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
 			return 1;	
 		}
 		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_respond);
+
+	}else if(strncmp(path, "/echo/", 6) == 0){ // test if the path contains the substring "/echo/"
+
+		// extract the string we need on the path
+		char *string = extract_string(path);
+		size_t string_len = strlen(string);
+
+		// Use the sprintf() to create the respond with all informations we have
+		char resultat[BUFFER_SIZE];
+		sprintf(resultat, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nContent-Length: %ld\r\n\r\n%s", string_len, string);
+
+		ssize_t server_send_respond = send( client_accepted, resultat, strlen(resultat), 0);
+		if(server_send_respond == -1){
+			printf("The respond fail to be sended: %s \n", strerror(errno));
+			return 1;	
+		}
+		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultat);
 	}else{
+
+		char *server_fail_respond = "HTTP/1.1 404 Not Found\r\n\r\n";
 		ssize_t server_send_respond = send( client_accepted, server_fail_respond, strlen(server_fail_respond), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
@@ -105,7 +148,7 @@ int main() {
 		}
 		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
 	}
-	
+		
 	close(server_fd);
 
 	return 0;
