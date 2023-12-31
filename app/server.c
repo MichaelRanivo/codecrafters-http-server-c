@@ -9,6 +9,22 @@
 
 #define BUFFER_SIZE	1024
 
+int path_valid(char *buffer, ssize_t bytes_read){
+
+	char *get = "GET / HTTP/1.1\r\n";
+	if(bytes_read < strlen(get)){
+		return 0;
+	}
+
+	for(size_t i=0; i<strlen(get); i++){
+		if(buffer[i] != get[i]){
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
 int main() {
 	// Disable output buffering
 	setbuf(stdout, NULL);
@@ -72,12 +88,23 @@ int main() {
 	printf("Received: %zd\nbytes: \n%s\n", message_recvd, client_response);
 
 	char *server_respond = "HTTP/1.1 200 ok\r\n\r\n";
-	ssize_t server_send_respond = send( client_accepted, server_respond, strlen(server_respond), 0);
-	if(server_send_respond == -1){
-		printf("The respond fail to be sended: %s \n", strerror(errno));
-		return 1;	
+	char *server_fail_respond = "HTTP/1.1 404 Not Found\r\n\r\n";
+
+	if(path_valid(client_response, message_recvd)){
+		ssize_t server_send_respond = send( client_accepted, server_respond, strlen(server_respond), 0);
+		if(server_send_respond == -1){
+			printf("The respond fail to be sended: %s \n", strerror(errno));
+			return 1;	
+		}
+		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_respond);
+	}else{
+		ssize_t server_send_respond = send( client_accepted, server_fail_respond, strlen(server_fail_respond), 0);
+		if(server_send_respond == -1){
+			printf("The respond fail to be sended: %s \n", strerror(errno));
+			return 1;	
+		}
+		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
 	}
-	printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_respond);
 	
 	close(server_fd);
 
