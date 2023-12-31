@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <unistd.h>
 
+#define BUFFER_SIZE	1024
+
 int main() {
 	// Disable output buffering
 	setbuf(stdout, NULL);
@@ -28,8 +30,8 @@ int main() {
 	// Since the tester restarts your program quite often, setting REUSE_PORT
 	// ensures that we don't run into 'Address already in use' errors
 	int reuse = 1;
-	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
-		printf("SO_REUSEPORT failed: %s \n", strerror(errno));
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+		printf("SO_REUSEADDR failed: %s \n", strerror(errno));
 		return 1;
 	}
 	
@@ -53,8 +55,29 @@ int main() {
 	printf("Waiting for a client to connect...\n");
 	client_addr_len = sizeof(client_addr);
 	
-	accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
+	int client_accepted = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
+	if(client_accepted == -1){
+		printf("Client not connected: %s \n", strerror(errno));
+		return 1;
+	}
+
 	printf("Client connected\n");
+
+	char client_response[BUFFER_SIZE];
+	ssize_t message_recvd = recv(client_accepted, client_response, BUFFER_SIZE, 0);
+	if(message_recvd == -1){
+		printf("Message recvd fail: %s \n", strerror(errno));
+		return 1;
+	}
+	printf("Received: %zd\nbytes: \n%s\n", message_recvd, client_response);
+
+	char *server_respond = "HTTP/1.1 200 ok\r\n\r\n";
+	ssize_t server_send_respond = send( client_accepted, server_respond, strlen(server_respond), 0);
+	if(server_send_respond == -1){
+		printf("The respond fail to be sended: %s \n", strerror(errno));
+		return 1;	
+	}
+	printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_respond);
 	
 	close(server_fd);
 
