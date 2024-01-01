@@ -11,7 +11,8 @@
 
 #define BUFFER_SIZE	1024
 
-volatile sig_atomic_t server_fd = 0;
+int server_fd = 0;
+pthread_mutex_t mutex;
 
 // Hundler of the Signal SIGINT
 void handleSIGINT() {
@@ -193,10 +194,23 @@ int main() {
     }
 	
 	while (1){
+
 		printf("Waiting for a client to connect...\n");
 		client_addr_len = sizeof(client_addr);
 		
+		int pthread_mutex_lock_return = pthread_mutex_lock(&mutex);
+		// if(pthread_mutex_lock_return != 0){
+		// 	printf("The mutex was not locked: %s \n", strerror(errno));
+		// 	return 1;
+		// }
+		// critical code
 		int client_accepted = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
+		// end of the critical code
+		int pthread_mutex_unlock_return = pthread_mutex_unlock(&mutex);
+		// if(pthread_mutex_unlock_return != 0){
+		// 	printf("The mutex was not unlocked: %s \n", strerror(errno));
+		// 	return 1;
+		// } 
 		if(client_accepted == -1){
 			printf("Client not connected: %s \n", strerror(errno));
 			return 1;
