@@ -75,7 +75,7 @@ void *client_thread_handler(void *arg) {
 	char *path = request_path(client_response);
 
 	if(strcmp(path, "/") == 0 ){
-		char *server_respond = "HTTP/1.1 200 ok\r\n\r\n";	
+		char *server_respond = "HTTP/1.1 200 ok\r\nConnection: close\r\n\r\n";	
 		ssize_t server_send_respond = send( client_accepted, server_respond, strlen(server_respond), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
@@ -92,7 +92,7 @@ void *client_thread_handler(void *arg) {
 
 		// Use the sprintf() to create the respond with all informations we have
 		char resultat[BUFFER_SIZE];
-		sprintf(resultat, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nContent-Length: %ld\r\n\r\n%s", string_len, string);
+		sprintf(resultat, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: %ld\r\n\r\n%s", string_len, string);
 
 		ssize_t server_send_respond = send( client_accepted, resultat, strlen(resultat), 0);
 		if(server_send_respond == -1){
@@ -108,7 +108,7 @@ void *client_thread_handler(void *arg) {
 		size_t userAgentLen = strlen(userAgent);
 
 		char resultatUserAgent[BUFFER_SIZE];
-		sprintf(resultatUserAgent, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nContent-Length: %ld\r\n\r\n%s", userAgentLen, userAgent);
+		sprintf(resultatUserAgent, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: %ld\r\n\r\n%s", userAgentLen, userAgent);
 
 		ssize_t server_send_respond = send( client_accepted, resultatUserAgent, strlen(resultatUserAgent), 0);
 		if(server_send_respond == -1){
@@ -118,7 +118,7 @@ void *client_thread_handler(void *arg) {
 		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultatUserAgent);
 
 	}else{
-		char *server_fail_respond = "HTTP/1.1 404 Not Found\r\n\r\n";
+		char *server_fail_respond = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
 		ssize_t server_send_respond = send( client_accepted, server_fail_respond, strlen(server_fail_respond), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
@@ -128,9 +128,17 @@ void *client_thread_handler(void *arg) {
 
 	}
 
+	printf("Marked the acceptation who will be closed\n");
+	int shutdown_acceptation = shutdown(client_accepted, SHUT_RDWR);
+	if(shutdown_acceptation == -1){
+		printf("The close of the network failed: %s \n", strerror(errno));
+		exit(1);
+	}
+
+	printf("Close the acceptation!\n");
 	int close_acceptation = close(client_accepted);
 	if(close_acceptation == -1){
-		printf("The close of the acceptation failed: %s \n", strerror(errno));
+		printf("The close of the socket failed: %s \n", strerror(errno));
 		exit(1);
 	}
 
@@ -153,7 +161,6 @@ int main() {
 	// Uncomment this block to pass the first stage
 	
 	int client_addr_len;
-	struct sockaddr_in client_addr;
 	
 	server_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (server_fd == -1) {
@@ -195,22 +202,16 @@ int main() {
 	
 	while (1){
 
+		struct sockaddr_in client_addr;
+
 		printf("Waiting for a client to connect...\n");
 		client_addr_len = sizeof(client_addr);
 		
-		int pthread_mutex_lock_return = pthread_mutex_lock(&mutex);
-		// if(pthread_mutex_lock_return != 0){
-		// 	printf("The mutex was not locked: %s \n", strerror(errno));
-		// 	return 1;
-		// }
+		pthread_mutex_lock(&mutex);
 		// critical code
 		int client_accepted = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
 		// end of the critical code
-		int pthread_mutex_unlock_return = pthread_mutex_unlock(&mutex);
-		// if(pthread_mutex_unlock_return != 0){
-		// 	printf("The mutex was not unlocked: %s \n", strerror(errno));
-		// 	return 1;
-		// } 
+		pthread_mutex_unlock(&mutex);
 		if(client_accepted == -1){
 			printf("Client not connected: %s \n", strerror(errno));
 			return 1;
