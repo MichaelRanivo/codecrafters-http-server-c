@@ -6,9 +6,32 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <signal.h>
+#include <pthread.h>
 
-#define BUFFER_SIZE	2048
+#define BUFFER_SIZE	1024
 
+volatile sig_atomic_t server_fd = 0;
+
+// Hundler of the Signal SIGINT
+void handleSIGINT() {
+    // Fermer le socket du serveur avant de quitter
+	printf("Marked the socket as socket who will be closed\n");
+	int closed_network = shutdown(server_fd, SHUT_RDWR);
+	if(closed_network == -1){
+		printf("The close of the network failed: %s \n", strerror(errno));
+		exit(1);
+	}
+
+	printf("Close the socket!\n");
+	int close_socket = close(server_fd);
+	if(close_socket == -1){
+		printf("The close of the socket failed: %s \n", strerror(errno));
+		exit(1);
+	}
+}
+
+// Function who recover the path on the client HTTP request
 char *request_path(char *buffer){
 	// take the first line of the HTTP request
 	char *first_line = strndup(buffer, strstr(buffer, "\r\n") - buffer);
@@ -20,6 +43,7 @@ char *request_path(char *buffer){
 	return strtok(del_get, " ");
 }
 
+// Function who extract the string on certains path (/echo/<string>)
 char *extract_string(char *buffer){
 	// move forward to remove the first "/"
 	const char *substring = buffer+1;
@@ -31,7 +55,94 @@ char *extract_string(char *buffer){
 	return slash_position+1;
 }
 
+void *client_thread_handler(void *arg) {
+
+	int client_accepted = *(int*)arg; 
+
+	char client_response[BUFFER_SIZE];
+	ssize_t message_recvd = recv(client_accepted, client_response, BUFFER_SIZE, 0);
+	if(message_recvd == -1){
+		printf("Message recvd fail: %s \n", strerror(errno));
+		exit(1);
+	}
+	// Printf search the char '\0' on the end of the client_response
+	// But the function recv() doesn't guarantee that the data we receve will end automaticaly with '\0'
+	// That's why we can find some bizarre char on the printf next! 
+	printf("Received: %zd\nbytes: \n%s\n", message_recvd, client_response);
+
+
+	char *path = request_path(client_response);
+
+	if(strcmp(path, "/") == 0 ){
+		char *server_respond = "HTTP/1.1 200 ok\r\n\r\n";	
+		ssize_t server_send_respond = send( client_accepted, server_respond, strlen(server_respond), 0);
+		if(server_send_respond == -1){
+			printf("The respond fail to be sended: %s \n", strerror(errno));
+			exit(1);	
+		}
+		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_respond);
+		//After the send on this path, the client(if it's a browser) keep-alive the connexion with the server
+		//that's why we can see the client is immédiatly connected after the send of the respond to the client
+
+	}else if(strncmp(path, "/echo/", 6) == 0){ // test if the path contains the substring "/echo/"
+		// extract the string we need on the path
+		char *string = extract_string(path);
+		size_t string_len = strlen(string);
+
+		// Use the sprintf() to create the respond with all informations we have
+		char resultat[BUFFER_SIZE];
+		sprintf(resultat, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nContent-Length: %ld\r\n\r\n%s", string_len, string);
+
+		ssize_t server_send_respond = send( client_accepted, resultat, strlen(resultat), 0);
+		if(server_send_respond == -1){
+			printf("The respond fail to be sended: %s \n", strerror(errno));
+			exit(1);	
+		}
+		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultat);
+
+	}else if (strncmp(path, "/user-agent", 11) == 0){
+		char *userAgentHttp = strstr(client_response, "User-Agent:");
+		char *userAgentLine = strndup(userAgentHttp, strstr(userAgentHttp, "\r\n") - userAgentHttp);
+		char *userAgent = strstr(userAgentLine, " ")+1;
+		size_t userAgentLen = strlen(userAgent);
+
+		char resultatUserAgent[BUFFER_SIZE];
+		sprintf(resultatUserAgent, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nContent-Length: %ld\r\n\r\n%s", userAgentLen, userAgent);
+
+		ssize_t server_send_respond = send( client_accepted, resultatUserAgent, strlen(resultatUserAgent), 0);
+		if(server_send_respond == -1){
+			printf("The respond fail to be sended: %s \n", strerror(errno));
+			exit(1);	
+		}
+		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultatUserAgent);
+
+	}else{
+		char *server_fail_respond = "HTTP/1.1 404 Not Found\r\n\r\n";
+		ssize_t server_send_respond = send( client_accepted, server_fail_respond, strlen(server_fail_respond), 0);
+		if(server_send_respond == -1){
+			printf("The respond fail to be sended: %s \n", strerror(errno));
+			exit(1);	
+		}
+		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
+
+	}
+
+	int close_acceptation = close(client_accepted);
+	if(close_acceptation == -1){
+		printf("The close of the acceptation failed: %s \n", strerror(errno));
+		exit(1);
+	}
+
+	return NULL;
+}
+
 int main() {
+	// Setting up the signal handler for SIGINT
+	struct sigaction action;
+    action.sa_handler = handleSIGINT;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+
 	// Disable output buffering
 	setbuf(stdout, NULL);
 
@@ -40,7 +151,7 @@ int main() {
 
 	// Uncomment this block to pass the first stage
 	
-	int server_fd, client_addr_len;
+	int client_addr_len;
 	struct sockaddr_in client_addr;
 	
 	server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -73,82 +184,47 @@ int main() {
 		printf("Listen failed: %s \n", strerror(errno));
 		return 1;
 	}
+
+	// when receve the signal SIGINT close properly the socket
+	int sigaction_return = sigaction(SIGINT, &action, NULL);
+	if (sigaction_return == -1) {
+		printf("Error during the listing signal: %s \n", strerror(errno));
+        return 1;
+    }
 	
-	printf("Waiting for a client to connect...\n");
-	client_addr_len = sizeof(client_addr);
-	
-	int client_accepted = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
-	if(client_accepted == -1){
-		printf("Client not connected: %s \n", strerror(errno));
-		return 1;
-	}
-
-	printf("Client connected\n");
-
-	char client_response[BUFFER_SIZE];
-	ssize_t message_recvd = recv(client_accepted, client_response, BUFFER_SIZE, 0);
-	if(message_recvd == -1){
-		printf("Message recvd fail: %s \n", strerror(errno));
-		return 1;
-	}
-	printf("Received: %zd\nbytes: \n%s\n", message_recvd, client_response);
-
-
-	char *path = request_path(client_response);
-
-	if(strcmp(path, "/") == 0 ){
-		char *server_respond = "HTTP/1.1 200 ok\r\n\r\n";	
-		ssize_t server_send_respond = send( client_accepted, server_respond, strlen(server_respond), 0);
-		if(server_send_respond == -1){
-			printf("The respond fail to be sended: %s \n", strerror(errno));
-			return 1;	
-		}
-		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_respond);
-
-	}else if(strncmp(path, "/echo/", 6) == 0){ // test if the path contains the substring "/echo/"
-		// extract the string we need on the path
-		char *string = extract_string(path);
-		size_t string_len = strlen(string);
-
-		// Use the sprintf() to create the respond with all informations we have
-		char resultat[BUFFER_SIZE];
-		sprintf(resultat, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nContent-Length: %ld\r\n\r\n%s", string_len, string);
-
-		ssize_t server_send_respond = send( client_accepted, resultat, strlen(resultat), 0);
-		if(server_send_respond == -1){
-			printf("The respond fail to be sended: %s \n", strerror(errno));
-			return 1;	
-		}
-		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultat);
-
-	}else if (strncmp(path, "/user-agent", 11) == 0){
-		char *userAgentHttp = strstr(client_response, "User-Agent:");
-    	char *userAgentLine = strndup(userAgentHttp, strstr(userAgentHttp, "\r\n") - userAgentHttp);
-		char *userAgent = strstr(userAgentLine, " ")+1;
-		size_t userAgentLen = strlen(userAgent);
-
-		char resultatUserAgent[BUFFER_SIZE];
-		sprintf(resultatUserAgent, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nContent-Length: %ld\r\n\r\n%s", userAgentLen, userAgent);
-
-		ssize_t server_send_respond = send( client_accepted, resultatUserAgent, strlen(resultatUserAgent), 0);
-		if(server_send_respond == -1){
-			printf("The respond fail to be sended: %s \n", strerror(errno));
-			return 1;	
-		}
-		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultatUserAgent);
-
-	}else{
-		char *server_fail_respond = "HTTP/1.1 404 Not Found\r\n\r\n";
-		ssize_t server_send_respond = send( client_accepted, server_fail_respond, strlen(server_fail_respond), 0);
-		if(server_send_respond == -1){
-			printf("The respond fail to be sended: %s \n", strerror(errno));
-			return 1;	
-		}
-		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
-
-	}
+	while (1){
+		printf("Waiting for a client to connect...\n");
+		client_addr_len = sizeof(client_addr);
 		
-	close(server_fd);
+		int client_accepted = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
+		if(client_accepted == -1){
+			printf("Client not connected: %s \n", strerror(errno));
+			return 1;
+		}
+
+		printf("Client connected\n");
+
+		pthread_t client_thread;
+		int pthread_return = pthread_create(&client_thread, NULL, client_thread_handler, (void *)&client_accepted);
+        if (pthread_return != 0) {
+            perror("Erreur lors de la création du thread");
+
+			int close_acceptation = close(client_accepted);
+			if(close_acceptation == -1){
+				printf("The close of the acceptation failed: %s \n", strerror(errno));
+				return 1;
+			}
+            continue;
+        }
+
+		// wait for thread to finish
+		int pthread_return_join = pthread_join(client_thread, NULL);
+		if(pthread_return_join == -1){
+			printf("Failed of the destruction of the thread\n");
+			return 1;
+		}
+				
+	}
 
 	return 0;
 }
