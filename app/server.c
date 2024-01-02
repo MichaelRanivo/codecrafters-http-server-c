@@ -11,13 +11,14 @@
 
 #define BUFFER_SIZE	1024
 
+int client_count = 0;
 int server_fd = 0;
 pthread_mutex_t mutex;
 
 // Hundler of the Signal SIGINT
 void handleSIGINT() {
     // Fermer le socket du serveur avant de quitter
-	printf("Marked the socket as socket who will be closed\n");
+	printf("The Server was shutdown by CTRL+C\nMarked the socket as socket who will be closed\n");
 	int closed_network = shutdown(server_fd, SHUT_RDWR);
 	if(closed_network == -1){
 		printf("The close of the network failed: %s \n", strerror(errno));
@@ -64,7 +65,7 @@ void *client_thread_handler(void *arg) {
 	ssize_t message_recvd = recv(client_accepted, client_response, BUFFER_SIZE, 0);
 	if(message_recvd == -1){
 		printf("Message recvd fail: %s \n", strerror(errno));
-		exit(1);
+		pthread_exit((int *)1);
 	}
 	// Printf search the char '\0' on the end of the client_response
 	// But the function recv() doesn't guarantee that the data we receve will end automaticaly with '\0'
@@ -79,7 +80,7 @@ void *client_thread_handler(void *arg) {
 		ssize_t server_send_respond = send( client_accepted, server_respond, strlen(server_respond), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
-			exit(1);	
+			pthread_exit((int *)1);	
 		}
 		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_respond);
 		//After the send on this path, the client(if it's a browser) keep-alive the connexion with the server
@@ -97,7 +98,7 @@ void *client_thread_handler(void *arg) {
 		ssize_t server_send_respond = send( client_accepted, resultat, strlen(resultat), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
-			exit(1);	
+			pthread_exit((int *)1);	
 		}
 		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultat);
 
@@ -113,7 +114,7 @@ void *client_thread_handler(void *arg) {
 		ssize_t server_send_respond = send( client_accepted, resultatUserAgent, strlen(resultatUserAgent), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
-			exit(1);	
+			pthread_exit((int *)1);	
 		}
 		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultatUserAgent);
 
@@ -122,7 +123,7 @@ void *client_thread_handler(void *arg) {
 		ssize_t server_send_respond = send( client_accepted, server_fail_respond, strlen(server_fail_respond), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
-			exit(1);	
+			pthread_exit((int *)1);	
 		}
 		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
 
@@ -132,15 +133,21 @@ void *client_thread_handler(void *arg) {
 	int shutdown_acceptation = shutdown(client_accepted, SHUT_RDWR);
 	if(shutdown_acceptation == -1){
 		printf("The close of the network failed: %s \n", strerror(errno));
-		exit(1);
+		pthread_exit((int *)1);
 	}
 
 	printf("Close the acceptation!\n");
 	int close_acceptation = close(client_accepted);
 	if(close_acceptation == -1){
 		printf("The close of the socket failed: %s \n", strerror(errno));
-		exit(1);
+		pthread_exit((int *)1);
 	}
+
+	pthread_mutex_lock(&mutex);
+	// critical code
+	client_count--;
+	// end of the critical code
+	pthread_mutex_unlock(&mutex);
 
 	return NULL;
 }
@@ -148,6 +155,10 @@ void *client_thread_handler(void *arg) {
 int main() {
 	// Setting up the signal handler for SIGINT
 	struct sigaction action;
+	int client_addr_len;
+	struct sockaddr_in client_addr;
+	client_addr_len = sizeof(client_addr);
+
     action.sa_handler = handleSIGINT;
     sigemptyset(&action.sa_mask);
     action.sa_flags = 0;
@@ -159,8 +170,6 @@ int main() {
 	printf("Logs from your program will appear here!\n");
 
 	// Uncomment this block to pass the first stage
-	
-	int client_addr_len;
 	
 	server_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (server_fd == -1) {
@@ -193,6 +202,12 @@ int main() {
 		return 1;
 	}
 
+	//init the mutex
+	if (pthread_mutex_init(&mutex, NULL) != 0) {
+        printf("Error during initialisation of Mutex: %s\n", strerror(errno));
+        return 1;
+    }
+
 	// when receve the signal SIGINT close properly the socket
 	int sigaction_return = sigaction(SIGINT, &action, NULL);
 	if (sigaction_return == -1) {
@@ -201,26 +216,26 @@ int main() {
     }
 	
 	while (1){
-
-		struct sockaddr_in client_addr;
-
 		printf("Waiting for a client to connect...\n");
-		client_addr_len = sizeof(client_addr);
-		
-		pthread_mutex_lock(&mutex);
-		// critical code
+
 		int client_accepted = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
-		// end of the critical code
-		pthread_mutex_unlock(&mutex);
 		if(client_accepted == -1){
 			printf("Client not connected: %s \n", strerror(errno));
 			return 1;
 		}
 
-		printf("Client connected\n");
+		pthread_mutex_lock(&mutex);
+		// critical code
+		client_count++;
+		printf("Client %d connected\n", client_count);
+		// end of the critical code
+		pthread_mutex_unlock(&mutex);
+
+		int *arg = (int *)malloc(sizeof(*arg));
+        *arg = client_accepted;
 
 		pthread_t client_thread;
-		int pthread_return = pthread_create(&client_thread, NULL, client_thread_handler, (void *)&client_accepted);
+		int pthread_return = pthread_create(&client_thread, NULL, client_thread_handler, arg);
         if (pthread_return != 0) {
             perror("Erreur lors de la création du thread");
 
@@ -232,14 +247,30 @@ int main() {
             continue;
         }
 
-		// wait for thread to finish
-		int pthread_return_join = pthread_join(client_thread, NULL);
-		if(pthread_return_join == -1){
-			printf("Failed of the destruction of the thread\n");
+		// detach the thread
+		int pthread_return_detach = pthread_detach(client_thread);
+		if(pthread_return_detach == -1){
+			printf("Failed to detach the thread\n");
 			return 1;
 		}
 				
 	}
+
+	printf("The Server was shutdown by ending the infinity loops\nMarked the socket as socket who will be closed\n");
+	int closed_network = shutdown(server_fd, SHUT_RDWR);
+	if(closed_network == -1){
+		printf("The close of the network failed: %s \n", strerror(errno));
+		exit(1);
+	}
+
+	printf("Close the socket!\n");
+	int close_socket = close(server_fd);
+	if(close_socket == -1){
+		printf("The close of the socket failed: %s \n", strerror(errno));
+		exit(1);
+	}
+
+	pthread_mutex_destroy(&mutex);
 
 	return 0;
 }
