@@ -98,6 +98,61 @@ char *extract_string(char *buffer){
 	return slash_position+1;
 }
 
+char *extract_body(char *buffer){
+	// Recherche de l'indice où le corps commence (après les en-têtes)
+    const char *body_start = strstr(buffer, "\r\n\r\n");
+
+    if (body_start == NULL) {
+        fprintf(stderr, "Erreur : Séparateur d'en-tête manquant.\n");
+        return NULL;
+    }
+
+    // printf("body_start : %s\n", body_start);
+
+    // Avancer au début du corps
+    body_start += 4;
+
+    // printf("body_start after move 4: \n%s\n", body_start);
+    // printf("l'indice ou le body commence : %ld\n",body_start-request);
+
+    // Recherche de l'en-tête Content-Length
+    const char *content_length_header = strstr(buffer, "Content-Length:");
+    
+    if (content_length_header == NULL) {
+        fprintf(stderr, "Erreur : L'en-tête Content-Length est manquant.\n");
+        return NULL;
+    }
+
+    // Récupération de la valeur de Content-Length
+    int content_length;
+    sscanf(content_length_header, "Content-Length: %d", &content_length);
+
+    // Vérification que le corps a une longueur valide
+    if (content_length < 0) {
+        fprintf(stderr, "Erreur : Longueur de contenu invalide.\n");
+        return NULL;
+    }
+
+    // Allocation d'une mémoire pour le corps
+    char *body = (char *)malloc(content_length + 1);
+
+    if (body == NULL) {
+        fprintf(stderr, "Erreur : Impossible d'allouer de la mémoire.\n");
+        return NULL;
+    }
+
+    // Copie du corps dans la mémoire allouée
+    strncpy(body, body_start, content_length);
+    body[content_length] = '\0'; // Ajout du caractère de fin de chaîne
+
+	return body;
+    // // Utilisation du corps (par exemple, impression)
+    // printf("Le corps de la requête est : \n%s\n", body);
+
+    // // Libération de la mémoire allouée
+    // free(body);
+}
+
 // Client thread handler! It's this functon who will execute when the main creat a thread!
 void *client_thread_handler(void *arg) {
 
@@ -113,111 +168,80 @@ void *client_thread_handler(void *arg) {
 	// But the function recv() doesn't guarantee that the data we receve will end automaticaly with '\0'
 	// That's why we can find some bizarre char on the printf next! 
 	printf("Received: %zd\nbytes: \n%s\n", message_recvd, client_response);
+	
+	// récuperer la methode utiliser par le client
+	// si c'est un GET on fait ce qu'il a été déjà fait
+	// si c'est un POST on fait ce qu'il doit être fait
+	size_t client_response_size = strlen(client_response);
+	char *copy_client_response = (char *)malloc(client_response_size+1);
+	if (copy_client_response == NULL) {
+        fprintf(stderr, "Erreur d'allocation mémoire.\n");
+        pthread_exit((int *)1); // Code d'erreur
+    }
+	strcpy(copy_client_response, client_response);
 
-	char *path = request_path(client_response);
+	char *path=request_path(copy_client_response);
 
-	if(path != NULL && strcmp(path, "/") == 0 ){
-		char *server_respond = "HTTP/1.1 200 ok\r\nConnection: close\r\n\r\n";	
-		ssize_t server_send_respond = send( thrd_arg.client_socket, server_respond, strlen(server_respond), 0);
-		if(server_send_respond == -1){
-			printf("The respond fail to be sended: %s \n", strerror(errno));
-			pthread_exit((int *)1);	
-		}
-		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_respond);
-		//After the send on this path, the client(if it's a browser) keep-alive the connexion with the server
-		//that's why we can see the client is immédiatly connected after the send of the respond to the client
+	free(copy_client_response);
 
-	}else if(path != NULL && strncmp(path, "/echo/", 6) == 0){ // test if the path contains the substring "/echo/"
-		// extract the string we need on the path
-		char *string = extract_string(path);
-		size_t string_len = strlen(string);
+    // char *methode=strtok(client_response, " ");
+	// This is to get the Methode of the request with use strtok()
+	// strtok move the pointer of client_response!
+    char methode[50];
+    int i = 0;
 
-		// Use the sprintf() to create the respond with all informations we have
-		char resultat[BUFFER_SIZE];
-		sprintf(resultat, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: %ld\r\n\r\n%s", string_len, string);
+    while (client_response[i] != ' ' && client_response[i] != '\0') {
+        methode[i] = client_response[i];
+        i++;
+    }
+    methode[i] = '\0';
 
-		ssize_t server_send_respond = send( thrd_arg.client_socket, resultat, strlen(resultat), 0);
-		if(server_send_respond == -1){
-			printf("The respond fail to be sended: %s \n", strerror(errno));
-			pthread_exit((int *)1);	
-		}
-		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultat);
-
-	}else if (path != NULL && strncmp(path, "/user-agent", 11) == 0){
-		char *userAgentHttp = strstr(client_response, "User-Agent:");
-		char *userAgentLine = strndup(userAgentHttp, strstr(userAgentHttp, "\r\n") - userAgentHttp);
-		char *userAgent = strstr(userAgentLine, " ")+1;
-		size_t userAgentLen = strlen(userAgent);
-
-		char resultatUserAgent[BUFFER_SIZE];
-		sprintf(resultatUserAgent, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: %ld\r\n\r\n%s", userAgentLen, userAgent);
-
-		ssize_t server_send_respond = send( thrd_arg.client_socket, resultatUserAgent, strlen(resultatUserAgent), 0);
-		if(server_send_respond == -1){
-			printf("The respond fail to be sended: %s \n", strerror(errno));
-			pthread_exit((int *)1);	
-		}
-		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultatUserAgent);
-
-		//after check with valgrind
-		free(userAgentLine);
-
-	}else if (path != NULL && strncmp(path, "/files/", 7) == 0 && thrd_arg.argc == 3){
-		// Recup le nom du fichier
-		char *filename=extract_string(path);
-		char directory[strlen(thrd_arg.dir_path)+strlen(filename)+1];
-
-		printf("The dir where supposed to be the file : %s\n",thrd_arg.dir_path);
-		printf("The file name : %s\n",filename);
-
-		//fusionner le dir_path et le filename
-		if(thrd_arg.dir_path[strlen(thrd_arg.dir_path)-1] != '/'){
-			sprintf(directory,"%s/%s", thrd_arg.dir_path, filename);
-		}else{
-			sprintf(directory,"%s%s", thrd_arg.dir_path, filename);
-		}
-		
-		printf("The absolute path for the file : %s\n",directory);
-
-		struct stat path_stat;
-
-        // Utilise stat pour obtenir des informations sur le chemin
-        if (stat(directory, &path_stat) == 0) {
-            // Vérifie si c'est un répertoire et qu'il existe
-            // if (!S_ISREG(path_stat.st_mode)) {
-            //     printf("The path don't mentionne a Dir\n");
-            //     return 1;
-            // }
-			
-			// lire le fichier 
-			size_t size_buffer = path_stat.st_size;
-
-			printf("The size of the file with path_stat : %ld\n",path_stat.st_size);
-			printf("The size of the file with size_byffer : %ld\n",size_buffer);
-
-
-			char buffer[size_buffer];
-
-			FILE *file = fopen(directory, "rb");
-			if (file != NULL) {
-				fread(buffer, sizeof(char), size_buffer, file);
-
-				if(ferror(file)){
-					printf("Failed to read the file\n");
-					pthread_exit((int *)1);	
-				}
-				
-				//closed the string with the '\0'
-				buffer[size_buffer]='\0';
-
-				fclose(file);
+	// The BIG if()!!!
+	if (strcmp(methode, "GET") == 0){
+		if(path != NULL && strcmp(path, "/") == 0 ){
+			char *server_respond = "HTTP/1.1 200 ok\r\nConnection: close\r\n\r\n";	
+			ssize_t server_send_respond = send( thrd_arg.client_socket, server_respond, strlen(server_respond), 0);
+			if(server_send_respond == -1){
+				printf("The respond fail to be sended: %s \n", strerror(errno));
+				pthread_exit((int *)1);	
 			}
+			printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_respond);
+			//After the send on this path, the client(if it's a browser) keep-alive the connexion with the server
+			//that's why we can see the client is immédiatly connected after the send of the respond to the client
 
-			printf("The file contains : %s\n",buffer);
-			// construire la réponse avec les headers et le contenue du fichier
-			// envoyer la réponse
-			char resultatUserAgent[3*BUFFER_SIZE];
-			sprintf(resultatUserAgent, "HTTP/1.1 200 ok\r\nContent-Type: application/octet-stream\r\nConnection: close\r\nContent-Length: %ld\r\n\r\n%s", size_buffer, buffer);
+		}else if(path != NULL && strncmp(path, "/echo/", 6) == 0){ // test if the path contains the substring "/echo/"
+			// extract the string we need on the path
+			char *string = extract_string(path);
+			size_t string_len = strlen(string);
+
+			// Use the sprintf() to create the respond with all informations we have
+			char resultat[BUFFER_SIZE];
+			sprintf(resultat, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: %ld\r\n\r\n%s", string_len, string);
+
+			ssize_t server_send_respond = send( thrd_arg.client_socket, resultat, strlen(resultat), 0);
+			if(server_send_respond == -1){
+				printf("The respond fail to be sended: %s \n", strerror(errno));
+				pthread_exit((int *)1);	
+			}
+			printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultat);
+
+		}else if (path != NULL && strncmp(path, "/user-agent", 11) == 0){
+
+			size_t client_response_size = strlen(client_response);
+			char *copy_client_response = (char *)malloc(client_response_size+1);
+			if (copy_client_response == NULL) {
+				fprintf(stderr, "Erreur d'allocation mémoire.\n");
+				pthread_exit((int *)1); // Code d'erreur
+			}
+			strcpy(copy_client_response, client_response);
+
+			char *userAgentHttp = strstr(copy_client_response, "User-Agent:");
+			char *userAgentLine = strndup(userAgentHttp, strstr(userAgentHttp, "\r\n") - userAgentHttp);
+			char *userAgent = strstr(userAgentLine, " ")+1;
+			size_t userAgentLen = strlen(userAgent);
+
+			char resultatUserAgent[BUFFER_SIZE];
+			sprintf(resultatUserAgent, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: %ld\r\n\r\n%s", userAgentLen, userAgent);
 
 			ssize_t server_send_respond = send( thrd_arg.client_socket, resultatUserAgent, strlen(resultatUserAgent), 0);
 			if(server_send_respond == -1){
@@ -225,10 +249,82 @@ void *client_thread_handler(void *arg) {
 				pthread_exit((int *)1);	
 			}
 			printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultatUserAgent);
-			
-        }else{
-			// envoyer une réponse 404
-			char *server_fail_respond = "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+
+			//after check with valgrind
+			free(userAgentLine);
+			free(copy_client_response);
+
+		}else if (path != NULL && strncmp(path, "/files/", 7) == 0 && thrd_arg.argc == 3){
+			// Recup le nom du fichier
+			char *filename=extract_string(path);
+
+			// TODO make sur take juste the name of the file but not the name AND the extention of the file!!
+
+			char directory[strlen(thrd_arg.dir_path)+strlen(filename)+1];
+
+			//fusionner le dir_path et le filename
+			if(thrd_arg.dir_path[strlen(thrd_arg.dir_path)-1] != '/'){
+				sprintf(directory,"%s/%s", thrd_arg.dir_path, filename);
+			}else{
+				sprintf(directory,"%s%s", thrd_arg.dir_path, filename);
+			}
+
+			struct stat path_stat;
+
+			// Utilise stat pour obtenir des informations sur le chemin
+			if (stat(directory, &path_stat) == 0) {
+				// Vérifie si c'est un répertoire et qu'il existe
+				// if (!S_ISREG(path_stat.st_mode)) {
+				//     printf("The path don't mentionne a Dir\n");
+				//     return 1;
+				// }
+				
+				// lire le fichier 
+				size_t size_buffer = path_stat.st_size;
+
+				char buffer[size_buffer];
+
+				FILE *file = fopen(directory, "rb");
+				if (file != NULL) {
+					fread(buffer, sizeof(char), size_buffer, file);
+
+					if(ferror(file)){
+						printf("Failed to read the file\n");
+						pthread_exit((int *)1);	
+					}
+					
+					//closed the string with the '\0'
+					buffer[size_buffer]='\0';
+
+					fclose(file);
+				}
+
+				// construire la réponse avec les headers et le contenue du fichier
+				// envoyer la réponse
+				char resultatUserAgent[3*BUFFER_SIZE];
+				sprintf(resultatUserAgent, "HTTP/1.1 200 ok\r\nContent-Type: application/octet-stream\r\nConnection: close\r\nContent-Length: %ld\r\n\r\n%s", size_buffer, buffer);
+
+				ssize_t server_send_respond = send( thrd_arg.client_socket, resultatUserAgent, strlen(resultatUserAgent), 0);
+				if(server_send_respond == -1){
+					printf("The respond fail to be sended: %s \n", strerror(errno));
+					pthread_exit((int *)1);	
+				}
+				printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultatUserAgent);
+				
+			}else{
+				// envoyer une réponse 404
+				char *server_fail_respond = "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+				ssize_t server_send_respond = send( thrd_arg.client_socket, server_fail_respond, strlen(server_fail_respond), 0);
+				if(server_send_respond == -1){
+					printf("The respond fail to be sended: %s \n", strerror(errno));
+					pthread_exit((int *)1);	
+				}
+				printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
+
+			}
+		
+		}else{
+			char *server_fail_respond = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
 			ssize_t server_send_respond = send( thrd_arg.client_socket, server_fail_respond, strlen(server_fail_respond), 0);
 			if(server_send_respond == -1){
 				printf("The respond fail to be sended: %s \n", strerror(errno));
@@ -236,10 +332,97 @@ void *client_thread_handler(void *arg) {
 			}
 			printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
 
-        }
-	
+		}
+
+	}else if (strcmp(methode, "POST") == 0){
+		if (path != NULL && strncmp(path, "/files/", 7) == 0 && thrd_arg.argc == 3){
+
+			size_t client_response_size = strlen(client_response);
+			char *copy_client_response = (char *)malloc(client_response_size+1);
+			if (copy_client_response == NULL) {
+				fprintf(stderr, "Erreur d'allocation mémoire.\n");
+				pthread_exit((int *)1); // Code d'erreur
+			}
+			strcpy(copy_client_response, client_response);
+
+			// TODO 
+			// Je dois récupérer le future nom du fichier
+			char *filename=extract_string(path);
+			char directory[strlen(thrd_arg.dir_path)+strlen(filename)+1];
+
+			if(thrd_arg.dir_path[strlen(thrd_arg.dir_path)-1] != '/'){
+				sprintf(directory,"%s/%s", thrd_arg.dir_path, filename);
+			}else{
+				sprintf(directory,"%s%s", thrd_arg.dir_path, filename);
+			}
+
+			// Je dois récupérer le body de la requete
+			char *body=extract_body(copy_client_response); //tester le retour body != NULL
+			if(body == NULL){
+				char *server_fail_respond = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: 7\r\n\r\nNo body";
+				ssize_t server_send_respond = send( thrd_arg.client_socket, server_fail_respond, strlen(server_fail_respond), 0);
+				if(server_send_respond == -1){
+					printf("The respond fail to be sended: %s \n", strerror(errno));
+					pthread_exit((int *)1);	
+				}
+				printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
+				return NULL;
+			}
+
+			printf("The future name of the file : %s\n", filename);
+			printf("The absolut path of the file: %s\n",directory);
+			printf("The request we receved: \n%s\n", client_response);
+			printf("The body : \n%s\n",body);
+
+			// je dois créer un fichier au nom du fichier et écrire dans ce fichier la valeur de ce que j'ai récupéré dans le body
+				//TODO 
+			FILE *file = fopen(directory, "wb");  // Mode "wb" pour écriture binaire (crée un nouveau fichier ou écrase un fichier existant)
+			if (file == NULL) {
+				char *server_fail_respond = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+				ssize_t server_send_respond = send( thrd_arg.client_socket, server_fail_respond, strlen(server_fail_respond), 0);
+				if(server_send_respond == -1){
+					printf("The respond fail to be sended: %s \n", strerror(errno));
+					pthread_exit((int *)1);	
+				}
+				printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
+
+				return NULL;
+			}
+			
+			// Écrire du contenu dans le fichier en utilisant fwrite
+			size_t elements_written = fwrite(body, sizeof(char), strlen(body), file);
+
+			if (elements_written != strlen(body)) {
+				char *server_fail_respond = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+				ssize_t server_send_respond = send( thrd_arg.client_socket, server_fail_respond, strlen(server_fail_respond), 0);
+				if(server_send_respond == -1){
+					printf("The respond fail to be sended: %s \n", strerror(errno));
+					pthread_exit((int *)1);	
+				}
+				printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
+				fclose(file);
+
+				return NULL;
+			}
+
+			// Fermer le fichier
+			fclose(file);
+
+			char *resultatUserAgent="HTTP/1.1 201 Created\r\n\r\n";
+			ssize_t server_send_respond = send( thrd_arg.client_socket, resultatUserAgent, strlen(resultatUserAgent), 0);
+			if(server_send_respond == -1){
+				printf("The respond fail to be sended: %s \n", strerror(errno));
+				pthread_exit((int *)1);	
+			}
+			printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultatUserAgent);
+
+			free(body);
+			free(copy_client_response);
+
+		}
+
 	}else{
-		char *server_fail_respond = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
+		char *server_fail_respond = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: 23\r\n\r\nUnsupported HTTP method";
 		ssize_t server_send_respond = send( thrd_arg.client_socket, server_fail_respond, strlen(server_fail_respond), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
@@ -248,6 +431,7 @@ void *client_thread_handler(void *arg) {
 		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
 
 	}
+	
 
 	// after check with valgrind
 	free(path);
