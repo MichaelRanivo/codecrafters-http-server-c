@@ -8,8 +8,17 @@
 #include <unistd.h>
 #include <signal.h>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
 #define BUFFER_SIZE	1024
+
+struct server_to_thread {
+	int client_socket;
+	int argc;
+	char *dir_path;
+};
+
 
 int client_count = 0;
 int server_fd = 0;
@@ -35,14 +44,46 @@ void handleSIGINT() {
 
 // Function who recover the path on the client HTTP request
 char *request_path(char *buffer){
-	// take the first line of the HTTP request
-	char *first_line = strndup(buffer, strstr(buffer, "\r\n") - buffer);
+    // Find the first occurrence of "\r\n" to identify the end of the first line
+    const char *line_end = strstr(buffer, "\r\n");
 
-	// remove the GET or the POST to the First line
-	char *del_get = strstr(first_line, " ");
+    if (line_end != NULL) {
+        // Calculate the length of the first line
+        size_t line_length = line_end - buffer;
 
-	// return the path on the first line of the HTTP request
-	return strtok(del_get, " ");
+        // Allocate memory for the first line and copy it
+        char *line = (char *)malloc(line_length + 1);
+        strncpy(line, buffer, line_length);
+        line[line_length] = '\0'; // Null-terminate the string
+
+        // Find the first space to identify the end of the method and the beginning of the path
+        const char *space = strchr(line, ' ');
+
+        if (space != NULL) {
+            // Move the pointer to the beginning of the path
+            const char *path_start = space + 1;
+
+            // Find the end of the path
+            const char *path_end = strchr(path_start, ' ');
+
+            if (path_end != NULL) {
+                // Calculate the length of the path
+                size_t path_length = path_end - path_start;
+
+                // Allocate memory for the path and copy it
+                char *path = (char *)malloc(path_length + 1);
+                strncpy(path, path_start, path_length);
+                path[path_length] = '\0'; // Null-terminate the string
+
+                free(line); // Free the memory allocated for the first line
+                return path;
+            }
+        }
+
+        free(line); // Free the memory allocated for the first line
+    }
+
+	return NULL;
 }
 
 // Function who extract the string on certains path (/echo/<string>)
@@ -57,12 +98,13 @@ char *extract_string(char *buffer){
 	return slash_position+1;
 }
 
+// Client thread handler! It's this functon who will execute when the main creat a thread!
 void *client_thread_handler(void *arg) {
 
-	int client_accepted = *(int*)arg; 
+	struct server_to_thread thrd_arg = *(struct server_to_thread*)arg;
 
 	char client_response[BUFFER_SIZE];
-	ssize_t message_recvd = recv(client_accepted, client_response, BUFFER_SIZE, 0);
+	ssize_t message_recvd = recv(thrd_arg.client_socket, client_response, BUFFER_SIZE, 0);
 	if(message_recvd == -1){
 		printf("Message recvd fail: %s \n", strerror(errno));
 		pthread_exit((int *)1);
@@ -72,12 +114,11 @@ void *client_thread_handler(void *arg) {
 	// That's why we can find some bizarre char on the printf next! 
 	printf("Received: %zd\nbytes: \n%s\n", message_recvd, client_response);
 
-
 	char *path = request_path(client_response);
 
-	if(strcmp(path, "/") == 0 ){
+	if(path != NULL && strcmp(path, "/") == 0 ){
 		char *server_respond = "HTTP/1.1 200 ok\r\nConnection: close\r\n\r\n";	
-		ssize_t server_send_respond = send( client_accepted, server_respond, strlen(server_respond), 0);
+		ssize_t server_send_respond = send( thrd_arg.client_socket, server_respond, strlen(server_respond), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
 			pthread_exit((int *)1);	
@@ -86,7 +127,7 @@ void *client_thread_handler(void *arg) {
 		//After the send on this path, the client(if it's a browser) keep-alive the connexion with the server
 		//that's why we can see the client is immédiatly connected after the send of the respond to the client
 
-	}else if(strncmp(path, "/echo/", 6) == 0){ // test if the path contains the substring "/echo/"
+	}else if(path != NULL && strncmp(path, "/echo/", 6) == 0){ // test if the path contains the substring "/echo/"
 		// extract the string we need on the path
 		char *string = extract_string(path);
 		size_t string_len = strlen(string);
@@ -95,14 +136,14 @@ void *client_thread_handler(void *arg) {
 		char resultat[BUFFER_SIZE];
 		sprintf(resultat, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: %ld\r\n\r\n%s", string_len, string);
 
-		ssize_t server_send_respond = send( client_accepted, resultat, strlen(resultat), 0);
+		ssize_t server_send_respond = send( thrd_arg.client_socket, resultat, strlen(resultat), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
 			pthread_exit((int *)1);	
 		}
 		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultat);
 
-	}else if (strncmp(path, "/user-agent", 11) == 0){
+	}else if (path != NULL && strncmp(path, "/user-agent", 11) == 0){
 		char *userAgentHttp = strstr(client_response, "User-Agent:");
 		char *userAgentLine = strndup(userAgentHttp, strstr(userAgentHttp, "\r\n") - userAgentHttp);
 		char *userAgent = strstr(userAgentLine, " ")+1;
@@ -111,16 +152,95 @@ void *client_thread_handler(void *arg) {
 		char resultatUserAgent[BUFFER_SIZE];
 		sprintf(resultatUserAgent, "HTTP/1.1 200 ok\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: %ld\r\n\r\n%s", userAgentLen, userAgent);
 
-		ssize_t server_send_respond = send( client_accepted, resultatUserAgent, strlen(resultatUserAgent), 0);
+		ssize_t server_send_respond = send( thrd_arg.client_socket, resultatUserAgent, strlen(resultatUserAgent), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
 			pthread_exit((int *)1);	
 		}
 		printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultatUserAgent);
 
+		//after check with valgrind
+		free(userAgentLine);
+
+	}else if (path != NULL && strncmp(path, "/files/", 7) == 0 && thrd_arg.argc == 3){
+		// Recup le nom du fichier
+		char *filename=extract_string(path);
+		char directory[strlen(thrd_arg.dir_path)+strlen(filename)+1];
+
+		printf("The dir where supposed to be the file : %s\n",thrd_arg.dir_path);
+		printf("The file name : %s\n",filename);
+
+		//fusionner le dir_path et le filename
+		if(thrd_arg.dir_path[strlen(thrd_arg.dir_path)-1] != '/'){
+			sprintf(directory,"%s/%s", thrd_arg.dir_path, filename);
+		}else{
+			sprintf(directory,"%s%s", thrd_arg.dir_path, filename);
+		}
+		
+		printf("The absolute path for the file : %s\n",directory);
+
+		struct stat path_stat;
+
+        // Utilise stat pour obtenir des informations sur le chemin
+        if (stat(directory, &path_stat) == 0) {
+            // Vérifie si c'est un répertoire et qu'il existe
+            // if (!S_ISREG(path_stat.st_mode)) {
+            //     printf("The path don't mentionne a Dir\n");
+            //     return 1;
+            // }
+			
+			// lire le fichier 
+			size_t size_buffer = path_stat.st_size;
+
+			printf("The size of the file with path_stat : %ld\n",path_stat.st_size);
+			printf("The size of the file with size_byffer : %ld\n",size_buffer);
+
+
+			char buffer[size_buffer];
+
+			FILE *file = fopen(directory, "rb");
+			if (file != NULL) {
+				fread(buffer, sizeof(char), size_buffer, file);
+
+				if(ferror(file)){
+					printf("Failed to read the file\n");
+					pthread_exit((int *)1);	
+				}
+				
+				//closed the string with the '\0'
+				buffer[size_buffer]='\0';
+
+				fclose(file);
+			}
+
+			printf("The file contains : %s\n",buffer);
+			// construire la réponse avec les headers et le contenue du fichier
+			// envoyer la réponse
+			char resultatUserAgent[3*BUFFER_SIZE];
+			sprintf(resultatUserAgent, "HTTP/1.1 200 ok\r\nContent-Type: application/octet-stream\r\nConnection: close\r\nContent-Length: %ld\r\n\r\n%s", size_buffer, buffer);
+
+			ssize_t server_send_respond = send( thrd_arg.client_socket, resultatUserAgent, strlen(resultatUserAgent), 0);
+			if(server_send_respond == -1){
+				printf("The respond fail to be sended: %s \n", strerror(errno));
+				pthread_exit((int *)1);	
+			}
+			printf("Send: %zd \nbytes: \n%s\n", server_send_respond, resultatUserAgent);
+			
+        }else{
+			// envoyer une réponse 404
+			char *server_fail_respond = "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+			ssize_t server_send_respond = send( thrd_arg.client_socket, server_fail_respond, strlen(server_fail_respond), 0);
+			if(server_send_respond == -1){
+				printf("The respond fail to be sended: %s \n", strerror(errno));
+				pthread_exit((int *)1);	
+			}
+			printf("Send: %zd \nbytes: \n%s\n", server_send_respond, server_fail_respond);
+
+        }
+	
 	}else{
 		char *server_fail_respond = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
-		ssize_t server_send_respond = send( client_accepted, server_fail_respond, strlen(server_fail_respond), 0);
+		ssize_t server_send_respond = send( thrd_arg.client_socket, server_fail_respond, strlen(server_fail_respond), 0);
 		if(server_send_respond == -1){
 			printf("The respond fail to be sended: %s \n", strerror(errno));
 			pthread_exit((int *)1);	
@@ -129,33 +249,67 @@ void *client_thread_handler(void *arg) {
 
 	}
 
+	// after check with valgrind
+	free(path);
+	free(arg);
+
 	printf("Marked the acceptation who will be closed\n");
-	int shutdown_acceptation = shutdown(client_accepted, SHUT_RDWR);
+	int shutdown_acceptation = shutdown(thrd_arg.client_socket, SHUT_RDWR);
 	if(shutdown_acceptation == -1){
 		printf("The close of the network failed: %s \n", strerror(errno));
 		pthread_exit((int *)1);
 	}
 
 	printf("Close the acceptation!\n");
-	int close_acceptation = close(client_accepted);
+	int close_acceptation = close(thrd_arg.client_socket);
 	if(close_acceptation == -1){
 		printf("The close of the socket failed: %s \n", strerror(errno));
 		pthread_exit((int *)1);
 	}
 
-	pthread_mutex_lock(&mutex);
-	// critical code
-	client_count--;
-	// end of the critical code
-	pthread_mutex_unlock(&mutex);
-
 	return NULL;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+	char *dir_path=argv[2];
+
+	//look for a argument
+	if((argc == 2) || (argc > 3)){
+
+        printf("Usage: ./server [--directory] [path]\n");
+        return 1;
+
+    }else if (argc == 3){
+
+        if(strcmp(argv[1],"--directory") != 0){
+            printf("Usage: ./server [--directory] [path]\n");
+            return 1;
+        }
+
+        struct stat path_stat;
+
+        if(dir_path[0] != '/'){
+            printf("The path must be a absolute path\n");
+            return 1;
+        }
+
+        // Utilise stat pour obtenir des informations sur le chemin
+        if (stat(dir_path, &path_stat) == 0) {
+            // Vérifie si c'est un répertoire et qu'il existe
+            if (!S_ISDIR(path_stat.st_mode)) {
+                printf("The path don't mentionne a Dir\n");
+                return 1;
+            }
+        }else{
+            printf("The Dir doesn't exist\n");
+            return 1;
+        }
+
+    }
+
 	// Setting up the signal handler for SIGINT
 	struct sigaction action;
-	int client_addr_len;
+	socklen_t client_addr_len;
 	struct sockaddr_in client_addr;
 	client_addr_len = sizeof(client_addr);
 
@@ -224,15 +378,21 @@ int main() {
 			return 1;
 		}
 
+		struct server_to_thread *arg = malloc(sizeof(struct server_to_thread));
+
 		pthread_mutex_lock(&mutex);
 		// critical code
+		if (argc==3){
+			arg->dir_path=dir_path;
+		}else{
+			arg->dir_path=NULL;
+		}
+		arg->argc=argc;
+        arg->client_socket = client_accepted;
 		client_count++;
 		printf("Client %d connected\n", client_count);
 		// end of the critical code
 		pthread_mutex_unlock(&mutex);
-
-		int *arg = (int *)malloc(sizeof(*arg));
-        *arg = client_accepted;
 
 		pthread_t client_thread;
 		int pthread_return = pthread_create(&client_thread, NULL, client_thread_handler, arg);
@@ -253,7 +413,7 @@ int main() {
 			printf("Failed to detach the thread\n");
 			return 1;
 		}
-				
+	
 	}
 
 	printf("The Server was shutdown by ending the infinity loops\nMarked the socket as socket who will be closed\n");
